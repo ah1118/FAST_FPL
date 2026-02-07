@@ -9,8 +9,16 @@ const PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAA
 const SPREADSHEET_ID =
   "1un_lwnU3pnp3PEFBHceNPJx1qBGVDR8m-rfhDA7wLbw";
 
+// Target range
+const TARGET_RANGE = "K17:Q17";
+
+// Behavior
+const PREFIX_WORD = "DAH";     // ✅ add the WORD DAH before digits
+const MIN_DIGITS = 3;         // ✅ accept only 3 or 4 digits
+const MAX_DIGITS = 4;
+
 /************************************
- * JWT + AUTH HELPERS
+ * BASE64URL
  ************************************/
 function base64url(bytes) {
   return btoa(String.fromCharCode(...bytes))
@@ -19,13 +27,20 @@ function base64url(bytes) {
     .replace(/=+$/, "");
 }
 
+/************************************
+ * JWT + AUTH (with token cache)
+ ************************************/
+let cachedToken = null;
+let tokenExpiryMs = 0;
+
 async function importPrivateKey() {
+  // Works whether PRIVATE_KEY is multiline or contains \n
   const pem = PRIVATE_KEY
     .replace(/-----BEGIN PRIVATE KEY-----/, "")
     .replace(/-----END PRIVATE KEY-----/, "")
     .replace(/\s+/g, "");
 
-  const binary = Uint8Array.from(atob(pem), c => c.charCodeAt(0));
+  const binary = Uint8Array.from(atob(pem), (c) => c.charCodeAt(0));
 
   return crypto.subtle.importKey(
     "pkcs8",
@@ -36,7 +51,7 @@ async function importPrivateKey() {
   );
 }
 
-async function getAccessToken() {
+async function generateJWT() {
   const now = Math.floor(Date.now() / 1000);
 
   const header = base64url(
@@ -44,13 +59,15 @@ async function getAccessToken() {
   );
 
   const claim = base64url(
-    new TextEncoder().encode(JSON.stringify({
-      iss: SERVICE_ACCOUNT_EMAIL,
-      scope: "https://www.googleapis.com/auth/spreadsheets",
-      aud: "https://oauth2.googleapis.com/token",
-      exp: now + 3600,
-      iat: now
-    }))
+    new TextEncoder().encode(
+      JSON.stringify({
+        iss: SERVICE_ACCOUNT_EMAIL,
+        scope: "https://www.googleapis.com/auth/spreadsheets",
+        aud: "https://oauth2.googleapis.com/token",
+        exp: now + 3600,
+        iat: now,
+      })
+    )
   );
 
   const unsignedJWT = `${header}.${claim}`;
@@ -62,67 +79,128 @@ async function getAccessToken() {
     new TextEncoder().encode(unsignedJWT)
   );
 
-  const jwt = `${unsignedJWT}.${base64url(new Uint8Array(signature))}`;
+  return `${unsignedJWT}.${base64url(new Uint8Array(signature))}`;
+}
+
+async function getAccessTokenCached() {
+  const now = Date.now();
+  if (cachedToken && now < tokenExpiryMs) return cachedToken;
+
+  const jwt = await generateJWT();
 
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`
+    body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
   });
 
-  const json = await res.json();
-  return json.access_token;
+  const txt = await res.text();
+  let json;
+  try {
+    json = JSON.parse(txt);
+  } catch {
+    throw new Error("Token response not JSON: " + txt);
+  }
+
+  if (!res.ok || !json.access_token) {
+    throw new Error("Token error: " + txt);
+  }
+
+  cachedToken = json.access_token;
+  tokenExpiryMs = now + 55 * 60 * 1000; // 55min cache
+  return cachedToken;
 }
 
 /************************************
- * UI LOGIC
+ * SHEETS UPDATE (K17:Q17)
+ ************************************/
+function buildRowForK17Q17(digits) {
+  // digits is "123" or "1234"
+  const s = PREFIX_WORD + digits; // "DAH123" or "DAH1234"
+
+  // K17:Q17 = 7 cells total
+  const row = s.split(""); // chars spread across cells
+  while (row.length < 7) row.push(""); // pad remaining cells with blanks
+  if (row.length > 7) row.length = 7;  // safety
+  return { display: s, row };
+}
+
+async function updateK17Q17(row) {
+  const token = await getAccessTokenCached();
+
+  const resp = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(
+      TARGET_RANGE
+    )}?valueInputOption=RAW`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ values: [row] }),
+    }
+  );
+
+  const bodyText = await resp.text();
+  if (!resp.ok) {
+    // This shows the real reason (403, permission, etc.)
+    throw new Error(bodyText);
+  }
+
+  return bodyText;
+}
+
+function openSheet() {
+  window.open(
+    `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=0`,
+    "_blank"
+  );
+}
+
+/************************************
+ * UI
  ************************************/
 const input = document.getElementById("num");
 const btn = document.getElementById("go");
 const status = document.getElementById("status");
 
-// numbers only
+function setStatus(msg, ok = true) {
+  status.textContent = msg;
+  status.style.color = ok ? "#a7ffb0" : "#ffb4b4";
+}
+
+function sanitizeDigits(v) {
+  // numbers only, max 4 digits
+  return String(v || "").replace(/\D/g, "").slice(0, MAX_DIGITS);
+}
+
+function isValidDigits(v) {
+  return new RegExp(`^\\d{${MIN_DIGITS},${MAX_DIGITS}}$`).test(v);
+}
+
 input.addEventListener("input", () => {
-  input.value = input.value.replace(/\D/g, "").slice(0, 6);
+  input.value = sanitizeDigits(input.value);
 });
 
 btn.onclick = async () => {
-  if (input.value.length !== 6) {
-    status.textContent = "❌ Enter exactly 6 digits";
-    return;
+  const digits = sanitizeDigits(input.value);
+
+  if (!isValidDigits(digits)) {
+    return setStatus(`❌ Enter ONLY ${MIN_DIGITS} or ${MAX_DIGITS} digits`, false);
   }
 
-  const chars = (input.value + "-").split("");
+  const { display, row } = buildRowForK17Q17(digits);
 
-  status.textContent = "⏳ Updating Google Sheet...";
+  setStatus("⏳ Updating Google Sheet...");
 
   try {
-    const token = await getAccessToken();
+    await updateK17Q17(row);
+    setStatus(`✅ Updated → ${display}`);
 
-    await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/K17:Q17?valueInputOption=RAW`,
-      {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ values: [chars] })
-      }
-    );
-
-    status.textContent = `✅ Updated → ${input.value}-`;
-
-    // ✅ OPEN SHEET AFTER SUCCESS
-    setTimeout(() => {
-      window.open(
-        `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=0`,
-        "_blank"
-      );
-    }, 200);
-
+    setTimeout(openSheet, 200);
   } catch (err) {
     console.error(err);
-    status.textContent = "❌ ERROR — check console";
+    setStatus("❌ ERROR — check console (likely 403 permissions)", false);
   }
 };
