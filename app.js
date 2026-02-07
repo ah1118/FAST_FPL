@@ -9,13 +9,25 @@ const PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAA
 const SPREADSHEET_ID =
   "1un_lwnU3pnp3PEFBHceNPJx1qBGVDR8m-rfhDA7wLbw";
 
-// Target range
-const TARGET_RANGE = "K17:Q17";
+// Ranges
+const RANGE_FLIGHT = "K17:Q17"; // 7 cells
+const RANGE_ACFT   = "F21:I21"; // 4 cells
 
 // Behavior
-const PREFIX_WORD = "DAH";     // ✅ add the WORD DAH before digits
-const MIN_DIGITS = 3;         // ✅ accept only 3 or 4 digits
+const PREFIX_WORD = "DAH"; // put before digits
+const MIN_DIGITS = 3;
 const MAX_DIGITS = 4;
+
+// Aircraft mapping (7 types)
+const ACFT_CODE_MAP = {
+  "ATR72-500": "AT75",
+  "ATR72-600": "AT76",
+  "BOEING B737-600": "B736",
+  "BOEING B737-700": "B737",
+  "BOEING B737-800": "B738",
+  "AIRBUS A332-200": "A332",
+  "A330-900": "A339",
+};
 
 /************************************
  * BASE64URL
@@ -28,13 +40,13 @@ function base64url(bytes) {
 }
 
 /************************************
- * JWT + AUTH (with token cache)
+ * JWT + AUTH (token cache)
  ************************************/
 let cachedToken = null;
 let tokenExpiryMs = 0;
 
 async function importPrivateKey() {
-  // Works whether PRIVATE_KEY is multiline or contains \n
+  // Works for multiline and \n format
   const pem = PRIVATE_KEY
     .replace(/-----BEGIN PRIVATE KEY-----/, "")
     .replace(/-----END PRIVATE KEY-----/, "")
@@ -96,59 +108,71 @@ async function getAccessTokenCached() {
 
   const txt = await res.text();
   let json;
-  try {
-    json = JSON.parse(txt);
-  } catch {
-    throw new Error("Token response not JSON: " + txt);
-  }
+  try { json = JSON.parse(txt); } catch { throw new Error("Token response not JSON: " + txt); }
 
-  if (!res.ok || !json.access_token) {
-    throw new Error("Token error: " + txt);
-  }
+  if (!res.ok || !json.access_token) throw new Error("Token error: " + txt);
 
   cachedToken = json.access_token;
-  tokenExpiryMs = now + 55 * 60 * 1000; // 55min cache
+  tokenExpiryMs = now + 55 * 60 * 1000;
   return cachedToken;
 }
 
 /************************************
- * SHEETS UPDATE (K17:Q17)
+ * BUILD VALUES FOR RANGES
  ************************************/
-function buildRowForK17Q17(digits) {
-  // digits is "123" or "1234"
-  const s = PREFIX_WORD + digits; // "DAH123" or "DAH1234"
+function sanitizeDigits(v) {
+  return String(v || "").replace(/\D/g, "").slice(0, MAX_DIGITS);
+}
 
-  // K17:Q17 = 7 cells total
-  const row = s.split(""); // chars spread across cells
-  while (row.length < 7) row.push(""); // pad remaining cells with blanks
-  if (row.length > 7) row.length = 7;  // safety
+function isValidDigits(v) {
+  return new RegExp(`^\\d{${MIN_DIGITS},${MAX_DIGITS}}$`).test(v);
+}
+
+function buildRowK17Q17(digits) {
+  // "DAH" + 3/4 digits => 6 or 7 chars total
+  const s = PREFIX_WORD + digits;
+
+  const row = s.split("");     // chars -> cells
+  while (row.length < 7) row.push(""); // pad to 7 cells
+  if (row.length > 7) row.length = 7; // safety
+
   return { display: s, row };
 }
 
-async function updateK17Q17(row) {
+function buildRowF21I21(acftType) {
+  const code = ACFT_CODE_MAP[acftType] || "";
+
+  if (!code || code.length !== 4) {
+    throw new Error("Invalid aircraft type or code not found");
+  }
+
+  return { code, row: code.split("") }; // 4 chars => F,G,H,I
+}
+
+/************************************
+ * ONE CALL: batchUpdate both ranges
+ ************************************/
+async function batchUpdateRanges(updates) {
   const token = await getAccessTokenCached();
 
   const resp = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(
-      TARGET_RANGE
-    )}?valueInputOption=RAW`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values:batchUpdate`,
     {
-      method: "PUT",
+      method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ values: [row] }),
+      body: JSON.stringify({
+        valueInputOption: "RAW",
+        data: updates, // [{range, values}]
+      }),
     }
   );
 
-  const bodyText = await resp.text();
-  if (!resp.ok) {
-    // This shows the real reason (403, permission, etc.)
-    throw new Error(bodyText);
-  }
-
-  return bodyText;
+  const txt = await resp.text();
+  if (!resp.ok) throw new Error(txt);
+  return txt;
 }
 
 function openSheet() {
@@ -164,43 +188,46 @@ function openSheet() {
 const input = document.getElementById("num");
 const btn = document.getElementById("go");
 const status = document.getElementById("status");
+const acftSelect = document.getElementById("acftType");
 
 function setStatus(msg, ok = true) {
   status.textContent = msg;
   status.style.color = ok ? "#a7ffb0" : "#ffb4b4";
 }
 
-function sanitizeDigits(v) {
-  // numbers only, max 4 digits
-  return String(v || "").replace(/\D/g, "").slice(0, MAX_DIGITS);
-}
-
-function isValidDigits(v) {
-  return new RegExp(`^\\d{${MIN_DIGITS},${MAX_DIGITS}}$`).test(v);
-}
-
+// numbers only, max 4
 input.addEventListener("input", () => {
   input.value = sanitizeDigits(input.value);
 });
 
 btn.onclick = async () => {
   const digits = sanitizeDigits(input.value);
+  const acftType = acftSelect ? acftSelect.value : "";
 
   if (!isValidDigits(digits)) {
-    return setStatus(`❌ Enter ONLY ${MIN_DIGITS} or ${MAX_DIGITS} digits`, false);
+    return setStatus("❌ Enter ONLY 3 or 4 digits", false);
   }
 
-  const { display, row } = buildRowForK17Q17(digits);
+  if (!ACFT_CODE_MAP[acftType]) {
+    return setStatus("❌ Select an aircraft type", false);
+  }
 
   setStatus("⏳ Updating Google Sheet...");
 
   try {
-    await updateK17Q17(row);
-    setStatus(`✅ Updated → ${display}`);
+    const flight = buildRowK17Q17(digits);
+    const acft = buildRowF21I21(acftType);
+
+    await batchUpdateRanges([
+      { range: RANGE_FLIGHT, values: [flight.row] }, // K17:Q17
+      { range: RANGE_ACFT,   values: [acft.row] },   // F21:I21
+    ]);
+
+    setStatus(`✅ Updated → ${flight.display} | ACFT=${acft.code}`);
 
     setTimeout(openSheet, 200);
   } catch (err) {
     console.error(err);
-    setStatus("❌ ERROR — check console (likely 403 permissions)", false);
+    setStatus("❌ ERROR — check console", false);
   }
 };
