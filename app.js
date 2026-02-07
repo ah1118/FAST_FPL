@@ -10,15 +10,16 @@ const SPREADSHEET_ID =
   "1un_lwnU3pnp3PEFBHceNPJx1qBGVDR8m-rfhDA7wLbw";
 
 // Ranges
-const RANGE_FLIGHT = "K17:Q17"; // 7 cells
-const RANGE_ACFT   = "F21:I21"; // 4 cells
+const RANGE_FLIGHT = "K17:Q17";   // 7 cells
+const RANGE_ACFT   = "F21:I21";   // 4 cells
+const RANGE_CODE   = "R21:AF21";  // long text (will be written starting in R21)
 
 // Behavior
-const PREFIX_WORD = "DAH"; // put before digits
+const PREFIX_WORD = "DAH"; // before digits
 const MIN_DIGITS = 3;
 const MAX_DIGITS = 4;
 
-// Aircraft mapping (7 types)
+// Aircraft mapping (7 types -> 4-char code)
 const ACFT_CODE_MAP = {
   "ATR72-500": "AT75",
   "ATR72-600": "AT76",
@@ -27,6 +28,22 @@ const ACFT_CODE_MAP = {
   "BOEING B737-800": "B738",
   "AIRBUS A332-200": "A332",
   "A330-900": "A339",
+};
+
+// R21:AF21 long-code mapping by aircraft code
+const LONG_CODE_BY_ACFT_CODE = {
+  // Boeing: same for 600/700/800
+  B736: "SDE1FGHIJ1M1RWY     /     LB1",
+  B737: "SDE1FGHIJ1M1RWY     /     LB1",
+  B738: "SDE1FGHIJ1M1RWY     /     LB1",
+
+  // ATR
+  AT75: "SDFGIRYZ     /     H",
+  AT76: "SDFGIRYZ     /     HB1",
+
+  // Airbus
+  A332: "SDE2FGHIJ2J4J5M1P2RWXYZ     /     LB1D1",
+  A339: "SDE1E2E3GHIJ1J4J5M1P2RWXY     /     LB1D1",
 };
 
 /************************************
@@ -46,7 +63,6 @@ let cachedToken = null;
 let tokenExpiryMs = 0;
 
 async function importPrivateKey() {
-  // Works for multiline and \n format
   const pem = PRIVATE_KEY
     .replace(/-----BEGIN PRIVATE KEY-----/, "")
     .replace(/-----END PRIVATE KEY-----/, "")
@@ -118,7 +134,7 @@ async function getAccessTokenCached() {
 }
 
 /************************************
- * BUILD VALUES FOR RANGES
+ * BUILD VALUES
  ************************************/
 function sanitizeDigits(v) {
   return String(v || "").replace(/\D/g, "").slice(0, MAX_DIGITS);
@@ -129,30 +145,36 @@ function isValidDigits(v) {
 }
 
 function buildRowK17Q17(digits) {
-  // "DAH" + 3/4 digits => 6 or 7 chars total
-  const s = PREFIX_WORD + digits;
+  const s = PREFIX_WORD + digits; // DAH123 or DAH1234
 
-  const row = s.split("");     // chars -> cells
-  while (row.length < 7) row.push(""); // pad to 7 cells
-  if (row.length > 7) row.length = 7; // safety
+  const row = s.split("");
+  while (row.length < 7) row.push("");
+  if (row.length > 7) row.length = 7;
 
   return { display: s, row };
 }
 
-function buildRowF21I21(acftType) {
-  const code = ACFT_CODE_MAP[acftType] || "";
+function getAcftCode(acftType) {
+  const code = ACFT_CODE_MAP[acftType];
+  if (!code) throw new Error("Select aircraft type");
+  return code;
+}
 
-  if (!code || code.length !== 4) {
-    throw new Error("Invalid aircraft type or code not found");
-  }
+function buildRowF21I21(acftCode) {
+  if (acftCode.length !== 4) throw new Error("Invalid aircraft code");
+  return acftCode.split(""); // 4 cells
+}
 
-  return { code, row: code.split("") }; // 4 chars => F,G,H,I
+function getLongCode(acftCode) {
+  const s = LONG_CODE_BY_ACFT_CODE[acftCode];
+  if (!s) throw new Error("No long code mapping for " + acftCode);
+  return s;
 }
 
 /************************************
- * ONE CALL: batchUpdate both ranges
+ * BATCH UPDATE
  ************************************/
-async function batchUpdateRanges(updates) {
+async function batchUpdateRanges(data) {
   const token = await getAccessTokenCached();
 
   const resp = await fetch(
@@ -165,7 +187,7 @@ async function batchUpdateRanges(updates) {
       },
       body: JSON.stringify({
         valueInputOption: "RAW",
-        data: updates, // [{range, values}]
+        data,
       }),
     }
   );
@@ -195,7 +217,6 @@ function setStatus(msg, ok = true) {
   status.style.color = ok ? "#a7ffb0" : "#ffb4b4";
 }
 
-// numbers only, max 4
 input.addEventListener("input", () => {
   input.value = sanitizeDigits(input.value);
 });
@@ -208,7 +229,7 @@ btn.onclick = async () => {
     return setStatus("❌ Enter ONLY 3 or 4 digits", false);
   }
 
-  if (!ACFT_CODE_MAP[acftType]) {
+  if (!acftType) {
     return setStatus("❌ Select an aircraft type", false);
   }
 
@@ -216,14 +237,19 @@ btn.onclick = async () => {
 
   try {
     const flight = buildRowK17Q17(digits);
-    const acft = buildRowF21I21(acftType);
+
+    const acftCode = getAcftCode(acftType);
+    const acftRow = buildRowF21I21(acftCode);
+
+    const longCode = getLongCode(acftCode);
 
     await batchUpdateRanges([
-      { range: RANGE_FLIGHT, values: [flight.row] }, // K17:Q17
-      { range: RANGE_ACFT,   values: [acft.row] },   // F21:I21
+      { range: RANGE_FLIGHT, values: [flight.row] },   // K17:Q17
+      { range: RANGE_ACFT,   values: [acftRow] },      // F21:I21
+      { range: RANGE_CODE,   values: [[longCode]] },   // R21:AF21 (string goes in R21)
     ]);
 
-    setStatus(`✅ Updated → ${flight.display} | ACFT=${acft.code}`);
+    setStatus(`✅ Updated → ${flight.display} | ${acftCode}`);
 
     setTimeout(openSheet, 200);
   } catch (err) {
