@@ -53,16 +53,16 @@ async function getAccessToken() {
     }))
   );
 
-  const data = `${header}.${claim}`;
+  const unsignedJWT = `${header}.${claim}`;
   const key = await importPrivateKey();
 
   const signature = await crypto.subtle.sign(
     "RSASSA-PKCS1-v1_5",
     key,
-    new TextEncoder().encode(data)
+    new TextEncoder().encode(unsignedJWT)
   );
 
-  const jwt = `${data}.${base64url(new Uint8Array(signature))}`;
+  const jwt = `${unsignedJWT}.${base64url(new Uint8Array(signature))}`;
 
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -94,7 +94,7 @@ btn.onclick = async () => {
 
   const chars = (input.value + "-").split("");
 
-  status.textContent = "⏳ Updating sheet...";
+  status.textContent = "⏳ Updating Google Sheet...";
 
   try {
     const token = await getAccessToken();
@@ -111,9 +111,18 @@ btn.onclick = async () => {
       }
     );
 
-    status.textContent = `✅ K17:Q17 updated → ${input.value}-`;
-  } catch (e) {
-    console.error(e);
-    status.textContent = "❌ ERROR (check console)";
+    status.textContent = `✅ Updated → ${input.value}-`;
+
+    // ✅ OPEN SHEET AFTER SUCCESS
+    setTimeout(() => {
+      window.open(
+        `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=0`,
+        "_blank"
+      );
+    }, 200);
+
+  } catch (err) {
+    console.error(err);
+    status.textContent = "❌ ERROR — check console";
   }
 };
