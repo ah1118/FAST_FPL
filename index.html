@@ -3,29 +3,52 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Update K17:Q17</title>
+  <title>Update K17:Q17 + F21:I21</title>
   <style>
     body{font-family:system-ui,Arial;background:#0b1220;color:#e8eefc;margin:0}
     .wrap{max-width:520px;margin:40px auto;padding:0 16px}
     .card{background:#121b2e;border:1px solid #22304d;border-radius:14px;padding:16px}
     label{display:block;margin:10px 0 6px;color:#bcd0ff}
-    input{width:100%;padding:12px;border-radius:10px;border:1px solid #2b3b60;background:#0e1628;color:#e8eefc;font-size:18px}
+    input, select{width:100%;padding:12px;border-radius:10px;border:1px solid #2b3b60;background:#0e1628;color:#e8eefc;font-size:16px}
     button{margin-top:14px;width:100%;padding:12px;border-radius:10px;border:1px solid #2b3b60;background:#2b66ff;color:#fff;font-size:16px;cursor:pointer}
     .status{margin-top:12px;opacity:.95}
-    .hint{opacity:.75;font-size:13px;margin-top:8px}
+    .hint{opacity:.75;font-size:13px;margin-top:8px;line-height:1.35}
   </style>
 </head>
+
 <body>
   <div class="wrap">
-    <h2>Update Google Sheet (K17:Q17)</h2>
+    <h2>Update Google Sheet</h2>
 
     <div class="card">
-      <label>Enter 6 digits (numbers only)</label>
-      <input id="num" inputmode="numeric" autocomplete="off" placeholder="123456" maxlength="6" />
+      <label>Enter 3 or 4 digits (numbers only)</label>
+      <input
+        id="num"
+        inputmode="numeric"
+        autocomplete="off"
+        placeholder="123 or 1234"
+        maxlength="4"
+      />
+
+      <label>Aircraft type</label>
+      <select id="acftType">
+        <option value="" selected disabled>Choose aircraft type…</option>
+        <option value="ATR72-500">ATR72-500 (AT75)</option>
+        <option value="ATR72-600">ATR72-600 (AT76)</option>
+        <option value="BOEING B737-600">BOEING B737-600 (B736)</option>
+        <option value="BOEING B737-700">BOEING B737-700 (B737)</option>
+        <option value="BOEING B737-800">BOEING B737-800 (B738)</option>
+        <option value="AIRBUS A332-200">AIRBUS A332-200 (A332)</option>
+        <option value="A330-900">A330-900 (A339)</option>
+      </select>
 
       <button id="go">Proceed</button>
 
-      <div class="hint">We will write: digits + "-" into K17:Q17</div>
+      <div class="hint">
+        • Writes <b>DAH + digits</b> into <b>K17:Q17</b><br/>
+        • Writes aircraft code into <b>F21:I21</b> (AT75/AT76/B736/B737/B738/A332/A339)
+      </div>
+
       <div id="status" class="status"></div>
     </div>
   </div>
